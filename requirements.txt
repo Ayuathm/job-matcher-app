@@ -8,3 +8,4 @@ spacy
 nltk
 matplotlib
 plotly
+python-docx
