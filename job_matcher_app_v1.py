@@ -11,12 +11,39 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from PyPDF2 import PdfReader
 import docx
+import plotly.express as px  # used for chart visualization
 
+# ✅ Streamlit configuration must come before any other Streamlit call
+st.set_page_config(page_title="AI Job Matcher", layout="wide")
+
+# --- Disclaimer Anchor Link ---
+st.markdown("<h1 id='disclaimer'></h1>", unsafe_allow_html=True)
+
+with st.expander("📌 Disclaimer – Please Read Before Uploading Your CV"):
+    st.markdown("""
+    ### Purpose of the Platform
+    This AI-Powered Job Matching Platform assists job seekers in finding relevant job opportunities aligned with their skills and experience.
+
+    ### Important Notice
+    - ⚠️ Uploading your CV does **not guarantee** matches.
+    - 🧠 Works best with text-based CVs (not scanned PDFs).
+    - 🔍 Use as a complement to other job search methods.
+
+    ### Data Privacy & Consent
+    - 📁 CVs are processed **temporarily** and not stored.
+    - 🔐 No personal data is retained without consent.
+    - ✅ By uploading your CV, you consent to automated processing for job matching.
+
+    ### Contact
+    Email: **support@example.com**
+
+    ---
+    *Disclaimer updated: June 2025*
+    """)
+
+# --- Structured Job Extraction Function ---
 def extract_structured_job(text: str) -> dict:
-    # Removed the problematic initial regex replacement.
-    # cleaned_text = re.sub(r'[^- ]+', ' ', text)
-    cleaned_text = re.sub(r'\s+', ' ', text).strip() # Just normalize spaces
-
+    cleaned_text = re.sub(r'\s+', ' ', text).strip()
     job_title = re.search(r"(Job\s*Title|Position)\s*[:\-–]?\s*(.*?)(?=\s[A-Z]{2,}|Duty\s*Station|Location|WHO\sWE\sARE|Responsibilities|Summary\s*of\s*the\s*role|Purpose|Requirements|Qualifications|Education)", cleaned_text, re.IGNORECASE)
     location = re.search(r"(Location|Duty\s*Station)\s*[:\-–]?\s*(.*?)(?=\s[A-Z]{2,}|Supervisor|About\sUs|Responsibilities|Summary\s*of\s*the\s*role|Purpose|Requirements|Qualifications|Education)", cleaned_text, re.IGNORECASE)
     organization = re.search(r"(?:WHO\sWE\sARE|About\sUs[:\-–]?)\s*(.*?)(?=\sResponsibilities|Purpose|The\sRole|Requirements|Qualifications|Education)", cleaned_text, re.IGNORECASE)
@@ -24,9 +51,6 @@ def extract_structured_job(text: str) -> dict:
     requirements = re.search(r"(Requirements|Qualifications|Education)\s*[:\-–]?\s*(.*?)(?=\sHow\s*to\s*Apply|Submission\s*Guidelines|Deadline|Disclaimer|$)", cleaned_text, re.IGNORECASE)
     application = re.search(r"(How\s*to\s*Apply|Submission\s*Guidelines|Deadline)\s*[:\-–]?\s*(.*?)(?=Disclaimer|$)", cleaned_text, re.IGNORECASE)
     email = re.search(r"\b[\w\.-]+@[\w\.-]+\.\w+\b", cleaned_text)
-
-    # Added more robust lookaheads to prevent over-capturing if a section is missing.
-    # For organization, adjusted to capture the content more reliably.
 
     return {
         "Job Title": job_title.group(2).strip() if job_title and job_title.group(2) else "",
@@ -38,23 +62,21 @@ def extract_structured_job(text: str) -> dict:
         "Contact Email": email.group(0) if email else ""
     }
 
-# --- DB Path ---
+# --- Database Path & Admin List ---
 DB_PATH = "data/jobmatcher.db"
-
-# --- Admin emails ---
 ADMIN_EMAILS = ["admin@matcher.com", "ayuathm@gmail.com"]
 
-# --- Initialize session state ---
+# --- Initialize Streamlit Session State ---
 if "user_email" not in st.session_state:
     st.session_state.user_email = ""
-if "is_admin" not in st.session_state: # Initialize independently
+if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-if "bookmarked_jobs" not in st.session_state: # Initialize independently
+if "bookmarked_jobs" not in st.session_state:
     st.session_state.bookmarked_jobs = []
-if "feedback" not in st.session_state: # Initialize independently
+if "feedback" not in st.session_state:
     st.session_state.feedback = {}
 
-# --- DB Operations ---
+# --- Database Operations ---
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('''
@@ -64,9 +86,19 @@ def init_db():
         )
         ''')
 
-def insert_single_job(text):
+def add_timestamp_column_if_missing():
     with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO jobs (text) VALUES (?)", (text,))
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(jobs)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "timestamp" not in columns:
+            cursor.execute("ALTER TABLE jobs ADD COLUMN timestamp TEXT")
+            conn.commit()
+
+def insert_single_job(text):
+    timestamp = datetime.datetime.now().isoformat()
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("INSERT INTO jobs (text, timestamp) VALUES (?, ?)", (text, timestamp))
 
 def load_jobs():
     with sqlite3.connect(DB_PATH) as conn:
@@ -111,7 +143,6 @@ def extract_text_from_docx(file):
     return "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
 
 # --- App Layout ---
-st.set_page_config(page_title="AI Job Matcher", layout="wide")
 st.title("🤖 AI-Powered Job Matching Platform")
 
 # --- Sidebar Login ---
@@ -124,13 +155,12 @@ with st.sidebar:
         log_user_login(email, st.session_state.is_admin)
         st.success(f"Logged in as {email}")
 
-# --- Tab Definition based on Admin Status ---
-is_admin = st.session_state.get("is_admin", False) # Ensure is_admin is up-to-date
-
+# --- Tabs (Admin & User Views) ---
+is_admin = st.session_state.get("is_admin", False)
 if is_admin:
     tab1, tab2 = st.tabs(["🛠 Admin Panel", "🤖 Job Matching"])
 else:
-    tab2, = st.tabs(["🤖 Job Matching"]) # Comma for single-element tuple unpacking
+    tab2, = st.tabs(["🤖 Job Matching"])
 
 # --- Admin Panel ---
 if is_admin:
@@ -138,7 +168,8 @@ if is_admin:
         st.header("Upload Job Descriptions (CSV, PDF, DOCX)")
         uploaded_file = st.file_uploader("Upload a file", type=["csv", "pdf", "docx"])
         if uploaded_file:
-            init_db() # Ensure DB is initialized
+            init_db()
+            add_timestamp_column_if_missing()
             texts = []
             if uploaded_file.name.endswith(".csv"):
                 df_upload = pd.read_csv(uploaded_file)
@@ -159,7 +190,7 @@ if is_admin:
                 st.warning("Could not extract any text from the uploaded file.")
 
 # --- Job Matching Panel ---
-with tab2: # This block was previously incorrectly indented
+with tab2:
     st.header("📎 Upload your CV")
     uploaded_cv = st.file_uploader("Upload your CV (PDF, DOCX, or TXT)", type=["pdf", "docx", "txt"])
     user_cv = ""
@@ -188,9 +219,8 @@ with tab2: # This block was previously incorrectly indented
             top_jobs = df.sort_values(by="Match Score", ascending=False).head(5)
 
             st.subheader("📊 Top 5 Job Matches")
-            import plotly.express as px # Import plotly here if only used here
-
             top_jobs["Short Title"] = top_jobs["text"].apply(lambda x: extract_structured_job(x).get("Job Title", "")[:30] or f"Job {str(x)[:10]}")
+
             fig = px.bar(
                 top_jobs,
                 x="Short Title",
@@ -203,7 +233,7 @@ with tab2: # This block was previously incorrectly indented
             fig.update_layout(yaxis_range=[0, 1], xaxis_tickangle=-30, height=400)
             st.plotly_chart(fig, use_container_width=True)
 
-            for i, row in top_jobs.iterrows():
+            for _, row in top_jobs.iterrows():
                 st.markdown(f"### Job ID {row['id']}")
                 st.write(f"**Match Score:** {round(row['Match Score'], 2)}")
                 structured = extract_structured_job(row["text"])
@@ -220,38 +250,31 @@ with tab2: # This block was previously incorrectly indented
                     st.write(f"📧 **Contact Email:** {structured['Contact Email']}")
 
                     if st.button(f"⭐ Save Job {row['id']}", key=f"save_{row['id']}"):
-                        # Convert Series to dict before appending for consistency
                         st.session_state.bookmarked_jobs.append(row.to_dict())
                         st.success(f"Job {row['id']} saved to bookmarks!")
 
-
-                    # Feedback mechanism - moved outside the save button to always display
-                    feedback_key = f"feedback_radio_{row['id']}" # Unique key for radio button
-                    feedback = st.radio(f"Was this job useful?", ["", "👍 Yes", "👎 No"], key=feedback_key)
-
-                    comment_key = f"comment_text_{row['id']}" # Unique key for text area
+                    feedback_key = f"feedback_radio_{row['id']}"
+                    feedback = st.radio("Was this job useful?", ["", "👍 Yes", "👎 No"], key=feedback_key)
+                    comment_key = f"comment_text_{row['id']}"
                     comment = st.text_area("Optional comment", key=comment_key)
 
-                    if feedback in ["👍 Yes", "👎 No"]: # Only store feedback if a choice is made
-                        if feedback_key not in st.session_state or st.session_state[feedback_key] != feedback: # Prevent storing on every rerun if unchanged
-                             store_feedback(row["id"], st.session_state.user_email, feedback, comment)
-                             st.session_state[feedback_key] = feedback # Update session state to reflect stored feedback
-                             st.success("Feedback submitted!")
+                    if feedback in ["👍 Yes", "👎 No"]:
+                        if feedback_key not in st.session_state or st.session_state[feedback_key] != feedback:
+                            store_feedback(row["id"], st.session_state.user_email, feedback, comment)
+                            st.session_state[feedback_key] = feedback
+                            st.success("Feedback submitted!")
 
-
-            # Download CSV button outside the loop, operating on all top_jobs
-            if not top_jobs.empty: # Only show download if there are jobs
+            if not top_jobs.empty:
                 csv_data = top_jobs.to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="📥 Download CSV of Top Jobs",
                     data=csv_data,
                     file_name="top_jobs.csv",
                     mime="text/csv",
-                    key="download_top_jobs_csv" # Add a unique key
+                    key="download_top_jobs_csv"
                 )
 
             if st.session_state.bookmarked_jobs:
                 st.subheader("⭐ Bookmarked Jobs")
-                # Ensure the DataFrame is created from a list of dictionaries if there are multiple formats
                 bookmark_df = pd.DataFrame(st.session_state.bookmarked_jobs)
                 st.dataframe(bookmark_df)
